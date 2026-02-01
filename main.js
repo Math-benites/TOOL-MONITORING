@@ -179,6 +179,127 @@
   }
 
   // ===========================
+  //  USER IFRAME MODAL (REPORT)
+  // ===========================
+  const USER_MODAL = {
+    ID: 'tmUserIframeModal',
+    BACKDROP_ID: 'tmUserIframeModal-backdrop'
+  };
+
+  function ensureUserIframeModal() {
+    if (document.getElementById(USER_MODAL.ID)) return;
+
+    const style = document.createElement('style');
+    style.textContent = `
+      #${USER_MODAL.BACKDROP_ID}{
+        position:fixed; inset:0; background:rgba(0,0,0,.55);
+        z-index:999999; display:none; align-items:center; justify-content:center;
+        padding:16px;
+      }
+      #${USER_MODAL.ID}{
+        width:min(1100px, 96vw);
+        height:min(78vh, 860px);
+        background:#0b1020; color:#e5e7eb;
+        border:1px solid rgba(148,163,184,.25);
+        border-radius:14px;
+        box-shadow:0 20px 80px rgba(0,0,0,.55);
+        overflow:hidden;
+        display:flex; flex-direction:column;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      }
+      #${USER_MODAL.ID} header{
+        display:flex; align-items:center; justify-content:space-between;
+        gap:10px;
+        padding:10px 14px; background:rgba(2,6,23,.75);
+        border-bottom:1px solid rgba(148,163,184,.18);
+        font-size:13px; font-weight:700;
+      }
+      #${USER_MODAL.ID} header .tm-actions{
+        display:flex; gap:8px; align-items:center;
+      }
+      #${USER_MODAL.ID} header a{
+        color:#93c5fd; text-decoration:none; font-weight:600;
+      }
+      #${USER_MODAL.ID} header a:hover{ text-decoration:underline; }
+      #${USER_MODAL.ID} header .tm-close{
+        appearance:none; border:none; background:transparent; color:#94a3b8;
+        font-size:18px; cursor:pointer; padding:6px 8px; border-radius:10px;
+      }
+      #${USER_MODAL.ID} header .tm-close:hover{ background:rgba(148,163,184,.12); color:#e2e8f0; }
+      #${USER_MODAL.ID} iframe{
+        width:100%; height:100%; border:0; background:white;
+      }
+      #${USER_MODAL.ID} .tm-loading{
+        padding:12px 14px; font-size:12px; color:#cbd5e1;
+        border-bottom:1px solid rgba(148,163,184,.18);
+      }
+    `;
+    document.head.appendChild(style);
+
+    const backdrop = document.createElement('div');
+    backdrop.id = USER_MODAL.BACKDROP_ID;
+    backdrop.innerHTML = `
+      <div id="${USER_MODAL.ID}" role="dialog" aria-modal="true">
+        <header>
+          <div id="tmUserIframeTitle">Usuário</div>
+          <div class="tm-actions">
+            <a id="tmUserIframeOpenTab" target="_blank" rel="noopener">Abrir em nova aba</a>
+            <button class="tm-close" title="Fechar" aria-label="Fechar">✕</button>
+          </div>
+        </header>
+        <div class="tm-loading" id="tmUserIframeLoading">Carregando…</div>
+        <iframe id="tmUserIframe" loading="lazy"></iframe>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    const closeBtn = backdrop.querySelector('.tm-close');
+    closeBtn.addEventListener('click', () => hideUserIframeModal());
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) hideUserIframeModal(); });
+  }
+
+  function showUserIframeModal(url, title) {
+    ensureUserIframeModal();
+    const bd = document.getElementById(USER_MODAL.BACKDROP_ID);
+    const iframe = document.getElementById('tmUserIframe');
+    const loading = document.getElementById('tmUserIframeLoading');
+    const titleEl = document.getElementById('tmUserIframeTitle');
+    const openTab = document.getElementById('tmUserIframeOpenTab');
+
+    titleEl.textContent = title || 'Usuário';
+    openTab.href = url;
+    loading.style.display = 'block';
+    iframe.onload = () => { loading.style.display = 'none'; };
+    iframe.src = url;
+
+    bd.style.display = 'flex';
+  }
+
+  function hideUserIframeModal() {
+    const bd = document.getElementById(USER_MODAL.BACKDROP_ID);
+    if (!bd) return;
+    bd.style.display = 'none';
+    const iframe = document.getElementById('tmUserIframe');
+    if (iframe) iframe.src = 'about:blank';
+  }
+
+  function interceptUserLinksForModal() {
+    if (!isEventsReportPage()) return;
+    const userLinks = document.querySelectorAll('a[href^="/users/"]');
+    userLinks.forEach((a) => {
+      if (a.dataset.tmUserModalBound) return;
+      a.dataset.tmUserModalBound = '1';
+      a.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        const href = a.getAttribute('href');
+        const title = a.textContent.trim();
+        showUserIframeModal(href, title);
+      });
+    });
+  }
+
+  // ===========================
   //  MAPS
   // ===========================
   function insertMapsButton() {
@@ -999,6 +1120,7 @@
     insertIpButtons();
     injectProvisionButtons();
     injectEventIcons();
+    interceptUserLinksForModal();
   }
 
   function observeDOM() {
