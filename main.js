@@ -144,6 +144,36 @@
     container.dataset.tmEventNoIconPad = '1';
   }
 
+  const STATUS_LABEL = {
+    background: '#fef3c7',
+    border: '#fcd34d',
+    text: '#92400e',
+  };
+
+  function shouldHighlightStatusLabel(text) {
+    const t = (text || '').toUpperCase();
+    return t.includes('ONLINE') || t.includes('OFFLINE');
+  }
+
+  function applyStatusLabelHighlight(row, container, text) {
+    if (!row || !container || !shouldHighlightStatusLabel(text)) return;
+    if (container.dataset.tmEventStatusHighlight) return;
+
+    container.dataset.tmEventStatusHighlight = '1';
+    row.dataset.tmEventStatusHighlight = '1';
+
+    container.style.setProperty('background-color', STATUS_LABEL.background, 'important');
+    container.style.setProperty('border-radius', '10px', 'important');
+    container.style.setProperty('padding', '6px 12px', 'important');
+    container.style.setProperty('box-shadow', `0 0 0 1px ${STATUS_LABEL.border} inset`, 'important');
+    container.style.setProperty('color', STATUS_LABEL.text, 'important');
+
+    row.style.setProperty('background-color', STATUS_LABEL.background, 'important');
+    row.style.setProperty('box-shadow', `0 0 0 1px ${STATUS_LABEL.border} inset`, 'important');
+    row.style.setProperty('border-radius', '12px', 'important');
+    row.style.setProperty('overflow', 'hidden', 'important');
+  }
+
   function injectEventIcons() {
     if (!isEventsReportPage()) return;
     if (injectEventIcons._running) return;
@@ -164,6 +194,8 @@
         const firstLine = container.querySelector('span');
         const text = (firstLine?.textContent || '').trim();
         if (!text) return;
+
+        applyStatusLabelHighlight(row, container, text);
 
         const icon = getEventIconForText(text);
         if (!icon) {
