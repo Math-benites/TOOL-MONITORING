@@ -1,0 +1,7 @@
+# Ignore subpastas e arquivos versionados de firmware
+firmwares/*/
+firmwares/*/**
+
+# Mantém apenas o marcador da pasta
+!firmwares/.gitkeep
+
