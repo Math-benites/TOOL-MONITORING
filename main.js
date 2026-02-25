@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Kiper Helper - Full Domain + No-F5 (Maps + Copy/Open + Status + Reboot + Provision Modal) v7.1
+// @name         Kiper Helper - Full Domain + No-F5 (Maps + Copy/Open + Status + Reboot + Provision Modal) v7.2
 // @namespace    https://monitoring.cloud.kiper.com.br/
-// @version      7.1
-// @description  Roda no domínio inteiro, re-injeta em navegação SPA (sem F5): Maps, Copy/Open, Status contínuo, Reboot e Modal Provision (Etapa 1/2/Reset/Log) para Kiper Access Veicular.
+// @version      7.2
+// @description  Roda no domínio inteiro, re-injeta em navegação SPA (sem F5): Maps, Copy/Open, Status contínuo, Reboot e Modal Provision (Etapa 1/2/Reset/Log/Print) para Kiper Access Veicular.
 // @author       Matheus Benites
 // @match        https://monitoring.cloud.kiper.com.br/*
 // @run-at       document-idle
@@ -144,6 +144,36 @@
     container.dataset.tmEventNoIconPad = '1';
   }
 
+  const STATUS_LABEL = {
+    background: '#fef3c7',
+    border: '#fcd34d',
+    text: '#92400e',
+  };
+
+  function shouldHighlightStatusLabel(text) {
+    const t = (text || '').toUpperCase();
+    return t.includes('ONLINE') || t.includes('OFFLINE');
+  }
+
+  function applyStatusLabelHighlight(row, container, text) {
+    if (!row || !container || !shouldHighlightStatusLabel(text)) return;
+    if (container.dataset.tmEventStatusHighlight) return;
+
+    container.dataset.tmEventStatusHighlight = '1';
+    row.dataset.tmEventStatusHighlight = '1';
+
+    container.style.setProperty('background-color', STATUS_LABEL.background, 'important');
+    container.style.setProperty('border-radius', '10px', 'important');
+    container.style.setProperty('padding', '6px 12px', 'important');
+    container.style.setProperty('box-shadow', `0 0 0 1px ${STATUS_LABEL.border} inset`, 'important');
+    container.style.setProperty('color', STATUS_LABEL.text, 'important');
+
+    row.style.setProperty('background-color', STATUS_LABEL.background, 'important');
+    row.style.setProperty('box-shadow', `0 0 0 1px ${STATUS_LABEL.border} inset`, 'important');
+    row.style.setProperty('border-radius', '12px', 'important');
+    row.style.setProperty('overflow', 'hidden', 'important');
+  }
+
   function injectEventIcons() {
     if (!isEventsReportPage()) return;
     if (injectEventIcons._running) return;
@@ -164,6 +194,8 @@
         const firstLine = container.querySelector('span');
         const text = (firstLine?.textContent || '').trim();
         if (!text) return;
+
+        applyStatusLabelHighlight(row, container, text);
 
         const icon = getEventIconForText(text);
         if (!icon) {
@@ -433,7 +465,6 @@
             throw new Error(`RST HTTP ${rstResp.status}`);
           }
         } catch (e) {
-          // device pode cair rápido: assume reboot enviado
           btnReboot.textContent = 'Enviado ✅';
           btnReboot.style.background = '#2e7d32';
           await wait(2500);
@@ -487,7 +518,6 @@
       wrapper.style.gap = '6px';
       wrapper.style.marginLeft = '6px';
 
-      // Open (com else-if correto)
       const btnOpen = makeButton('Open', 'Abrir interface web', '#0288d1');
       btnOpen.addEventListener('click', () => {
         if (isAccess || liText.includes(DEVICE_CONTROLLER)) {
@@ -497,7 +527,6 @@
         }
       });
 
-      // Copy
       const btnCopy = makeButton('Copy', 'Copiar IP', '#388e3c');
       btnCopy.addEventListener('click', () => {
         navigator.clipboard.writeText(ip).then(() => {
@@ -507,10 +536,8 @@
         });
       });
 
-      // Status
       const btnStatus = makeButton('Verificando...', 'Status do IP', '#f57c00');
 
-      // Reboot (só Access)
       let btnReboot = null;
       if (isAccess) {
         btnReboot = makeButton('Reiniciar', 'Reiniciar dispositivo', '#f44336');
@@ -527,7 +554,6 @@
 
       span.parentElement.appendChild(wrapper);
 
-      // ping contínuo
       (function continuousPing() {
         const startTime = Date.now();
         checkOnline(ip, (online, latency) => {
@@ -542,7 +568,7 @@
   }
 
   // ===========================
-  //  PROVISION MODAL (Etapa 1/2/Reset/Log)
+  //  PROVISION MODAL (Etapa 1/2/Reset/Log/Provisionamento MK)
   // ===========================
   const PROVISION = {
     DEVICE_PORT: 8085,
@@ -554,6 +580,8 @@
     BTN_MARK: 'tm-open-provision-modal',
     MODAL_ID: 'tmProvisionModal',
     ONLY_DEVICE_NAME: 'Kiper Access Veicular',
+    STORAGE_KEY: 'tmProvisionDraft.v1',
+    GO_SSH_BASE_URL: 'http://10.255.255.101:8090',
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -615,6 +643,68 @@
     });
   }
 
+  function tryParseJson(text) {
+    try {
+      return JSON.parse(text || '{}');
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function getProvisionDraftFromInputs() {
+    return {
+      newIp: document.getElementById('tmNewIp')?.value?.trim() || '',
+      email: document.getElementById('tmEmail')?.value?.trim() || '',
+      pass: document.getElementById('tmPass')?.value ?? '',
+      usermk: document.getElementById('tmUserMk')?.value?.trim() || '',
+      passmk: document.getElementById('tmPassMk')?.value ?? '',
+      portmk: document.getElementById('tmPortMk')?.value?.trim() || '',
+      apikey: document.getElementById('tmApiKey')?.value?.trim() || '',
+    };
+  }
+
+  function saveProvisionDraft() {
+    try {
+      const draft = getProvisionDraftFromInputs();
+      localStorage.setItem(PROVISION.STORAGE_KEY, JSON.stringify(draft));
+    } catch (e) {
+      console.warn('[provision] falha ao salvar draft', e);
+    }
+  }
+
+  function loadProvisionDraft() {
+    try {
+      const raw = localStorage.getItem(PROVISION.STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch (e) {
+      console.warn('[provision] falha ao carregar draft', e);
+      return null;
+    }
+  }
+
+  function applyProvisionDraftToInputs(draft) {
+    if (!draft) return;
+
+    const setIfPresent = (id, key) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (typeof draft[key] === 'string' && draft[key] !== '') {
+        el.value = draft[key];
+      }
+    };
+
+    setIfPresent('tmNewIp', 'newIp');
+    setIfPresent('tmEmail', 'email');
+    setIfPresent('tmPass', 'pass');
+    setIfPresent('tmUserMk', 'usermk');
+    setIfPresent('tmPassMk', 'passmk');
+    setIfPresent('tmPortMk', 'portmk');
+    setIfPresent('tmApiKey', 'apikey');
+  }
+
   function ensureModal() {
     if (document.getElementById(PROVISION.MODAL_ID)) return;
 
@@ -626,12 +716,15 @@
         padding:16px;
       }
       #${PROVISION.MODAL_ID}{
-        width:min(720px, 100%);
+        width:min(1040px, 100%);
+        max-height:calc(100vh - 32px);
         background:#0f172a; color:#e2e8f0;
         border:1px solid rgba(148,163,184,.25);
         border-radius:14px;
         box-shadow:0 20px 80px rgba(0,0,0,.55);
         overflow:hidden;
+        display:flex;
+        flex-direction:column;
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
       }
       #${PROVISION.MODAL_ID} header{
@@ -648,7 +741,91 @@
         font-size:18px; cursor:pointer; padding:6px 8px; border-radius:10px;
       }
       #${PROVISION.MODAL_ID} header .tm-close:hover{ background:rgba(148,163,184,.12); color:#e2e8f0; }
-      #${PROVISION.MODAL_ID} .body{ padding:16px; display:grid; gap:14px; }
+      #${PROVISION.MODAL_ID} .body{
+        padding:16px;
+        overflow:auto;
+        min-height:0;
+      }
+      #${PROVISION.MODAL_ID} .outer-layout{
+        display:grid;
+        grid-template-columns: 290px 1fr;
+        gap:14px;
+        align-items:start;
+      }
+      #${PROVISION.MODAL_ID} .main-panel{
+        border:1px solid rgba(148,163,184,.22);
+        border-radius:12px;
+        background:rgba(2,6,23,.38);
+        padding:12px;
+        display:grid;
+        gap:12px;
+      }
+      #${PROVISION.MODAL_ID} .main-col{
+        display:grid;
+        gap:12px;
+      }
+      #${PROVISION.MODAL_ID} .action-card{
+        border:1px solid rgba(148,163,184,.22);
+        border-radius:12px;
+        background:rgba(2,6,23,.45);
+        padding:12px;
+        display:grid;
+        gap:8px;
+      }
+      #${PROVISION.MODAL_ID} .danger-footer{
+        margin-top:14px;
+        border:1px solid rgba(220,38,38,.35);
+        border-radius:12px;
+        background:rgba(127,29,29,.18);
+        padding:10px;
+        display:flex;
+        justify-content:flex-end;
+        align-items:center;
+      }
+      #${PROVISION.MODAL_ID} .danger-footer .btn{
+        min-width:180px;
+      }
+      #${PROVISION.MODAL_ID} .action-card-title{
+        font-size:12px;
+        font-weight:800;
+        color:#93c5fd;
+        letter-spacing:.3px;
+        text-transform:uppercase;
+        margin-bottom:4px;
+      }
+      #${PROVISION.MODAL_ID} .action-card .btn{
+        width:100%;
+        text-align:left;
+      }
+      #${PROVISION.MODAL_ID} .action-row{
+        display:grid;
+        grid-template-columns: 1fr 28px;
+        gap:8px;
+        align-items:center;
+      }
+      #${PROVISION.MODAL_ID} .action-result{
+        width:26px;
+        height:26px;
+        border-radius:8px;
+        border:1px solid rgba(148,163,184,.35);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-weight:800;
+        font-size:14px;
+        color:#94a3b8;
+        background:rgba(15,23,42,.55);
+      }
+      #${PROVISION.MODAL_ID} .action-result.ok{
+        border-color:#16a34a;
+        color:#16a34a;
+        background:rgba(22,163,74,.12);
+      }
+      #${PROVISION.MODAL_ID} .action-result.err{
+        border-color:#dc2626;
+        color:#dc2626;
+        background:rgba(220,38,38,.12);
+      }
       #${PROVISION.MODAL_ID} .grid{
         display:grid; gap:10px;
         grid-template-columns: 1fr 1fr;
@@ -721,6 +898,9 @@
         font-weight:800;
       }
       #${PROVISION.MODAL_ID} .pill-warn{ background:#fde68a; }
+      @media (max-width: 980px){
+        #${PROVISION.MODAL_ID} .outer-layout{ grid-template-columns: 1fr; }
+      }
     `;
     document.head.appendChild(style);
 
@@ -730,49 +910,90 @@
       <div id="${PROVISION.MODAL_ID}" role="dialog" aria-modal="true">
         <header>
           <h3>Provisionamento Kiper Access <span class="pill pill-warn" id="tmStepPill">Manual</span></h3>
-          <button class="btn btn-danger" id="tmRunReset">RESET ACCESS</button>
           <button class="tm-close" title="Fechar" aria-label="Fechar">✕</button>
         </header>
         <div class="body">
-          <div class="grid">
-            <div>
-              <label>IP atual do device</label>
-              <input id="tmCurrentIp" placeholder="ex: 10.0.128.36" disabled />
-            </div>
-            <div>
-              <label>Novo IP</label>
-              <input id="tmNewIp" placeholder="ex: 10.0.50.36" />
-            </div>
-            <div>
-              <label>Gateway (auto .1)</label>
-              <input id="tmGateway" placeholder="ex: 10.0.50.1" disabled />
-            </div>
-            <div>
-              <label>Email-monitoring (api_user_name)</label>
-              <input id="tmEmail" placeholder="ex: nome@porter.com.br" />
-            </div>
-            <div style="grid-column: 1 / -1;">
-              <label>Senha-monitoring (api_password)</label>
-              <input id="tmPass" type="password" placeholder="••••••••" />
-            </div>
+          <div class="outer-layout">
+            <aside class="action-card">
+              <div class="action-card-title">Fluxo Provisionamento</div>
+              <div class="action-row">
+                <button class="btn btn-secondary" id="tmProvisionMk">1-ATIVAR PROVISIONAMENTO MK</button>
+                <span id="tmProvisionMkResult" class="action-result" title="Sem execução">•</span>
+              </div>
+              <div class="action-row">
+                <button class="btn btn-secondary" id="tmRunStep1">2-RODAR ETAPA 1</button>
+                <span id="tmRunStep1Result" class="action-result" title="Sem execução">•</span>
+              </div>
+              <div class="action-row">
+                <button class="btn btn-secondary" id="tmDisableProvisionMk">3-DESABILITAR PROVISIONAMENTO MK</button>
+                <span id="tmDisableProvisionMkResult" class="action-result" title="Sem execução">•</span>
+              </div>
+              <div class="action-row">
+                <button class="btn btn-secondary" id="tmRunStep2">4-RODAR ETAPA 2</button>
+                <span id="tmRunStep2Result" class="action-result" title="Sem execução">•</span>
+              </div>
+              <button class="btn btn-secondary" id="tmGetLog">VER LOG</button>
+            </aside>
+            <section class="main-panel">
+              <div class="grid">
+                <div>
+                  <label>IP atual do device</label>
+                  <input id="tmCurrentIp" placeholder="ex: 10.0.128.36" disabled />
+                </div>
+                <div>
+                  <label>Novo IP</label>
+                  <input id="tmNewIp" placeholder="ex: 10.0.50.36" />
+                </div>
+                <div>
+                  <label>Gateway (auto .1) / Host MikroTik</label>
+                  <input id="tmGateway" placeholder="ex: 10.0.50.1" />
+                </div>
+                <div>
+                  <label>Email-monitoring (api_user_name)</label>
+                  <input id="tmEmail" placeholder="ex: nome@porter.com.br" />
+                </div>
+                <div style="grid-column: 1 / -1;">
+                  <label>Senha-monitoring (api_password)</label>
+                  <input id="tmPass" type="password" placeholder="••••••••" />
+                </div>
+                <div>
+                  <label>User MK</label>
+                  <input id="tmUserMk" placeholder="ex: admin" />
+                </div>
+                <div>
+                  <label>Pass MK</label>
+                  <input id="tmPassMk" type="password" placeholder="••••••••" />
+                </div>
+                <div>
+                  <label>Port MK</label>
+                  <input id="tmPortMk" type="number" placeholder="ex: 22" />
+                </div>
+                <div>
+                  <label>API Key</label>
+                  <input id="tmApiKey" placeholder="ex: sua-chave-api" />
+                </div>
+              </div>
+              <div class="hint">
+                Etapa 1 faz rede + credenciais MQTT + <b>reboot</b>. Depois, quando o device estiver online e NAT ok,
+                você roda a Etapa 2 para <b>renovar certificado</b> (demora ~30s).
+              </div>
+              <div class="main-col">
+                <div class="status">
+                  <pre id="tmStatus"></pre>
+                </div>
+                <div class="logbox">
+                  <label>kLog.txt (visualização)</label>
+                  <textarea id="tmLogText" placeholder="Clique em 'Ver Log' para carregar..."></textarea>
+                </div>
+                <div class="row">
+                  <button class="btn btn-secondary" id="tmClearLog">Limpar status</button>
+                  <button class="btn btn-danger" id="tmClose">Fechar</button>
+                </div>
+              </div>
+            </section>
           </div>
-          <div class="hint">
-            Etapa 1 faz rede + credenciais MQTT + <b>reboot</b>. Depois, quando o device estiver online e NAT ok,
-            você roda a Etapa 2 para <b>renovar certificado</b> (demora ~30s).
-          </div>
-          <div class="row">
-            <button class="btn btn-primary" id="tmRunStep1">Rodar Etapa 1 (IP+MQTT+REBOOT)</button>
-            <button class="btn btn-secondary" id="tmRunStep2">Rodar Etapa 2 (Renew Cert)</button>
-            <button class="btn btn-secondary" id="tmGetLog">Ver Log</button>
-            <button class="btn btn-secondary" id="tmClearLog">Limpar status</button>
-            <button class="btn btn-danger" id="tmClose">Fechar</button>
-          </div>
-          <div class="status">
-            <pre id="tmStatus"></pre>
-          </div>
-          <div class="logbox">
-            <label>kLog.txt (visualização)</label>
-            <textarea id="tmLogText" placeholder="Clique em 'Ver Log' para carregar..."></textarea>
+          <div class="danger-footer">
+            <button class="btn btn-danger" id="tmRunReset">RESET ACESS</button>
           </div>
         </div>
       </div>
@@ -785,7 +1006,15 @@
 
     const newIpEl = backdrop.querySelector('#tmNewIp');
     const gwEl = backdrop.querySelector('#tmGateway');
-    newIpEl.addEventListener('input', () => { gwEl.value = computeGateway(newIpEl.value.trim()); });
+    newIpEl.addEventListener('input', () => {
+      gwEl.value = computeGateway(newIpEl.value.trim());
+      saveProvisionDraft();
+    });
+
+    ['tmEmail', 'tmPass', 'tmUserMk', 'tmPassMk', 'tmPortMk', 'tmApiKey'].forEach((id) => {
+      const el = backdrop.querySelector(`#${id}`);
+      if (el) el.addEventListener('input', saveProvisionDraft);
+    });
 
     backdrop.querySelector('#tmClearLog').addEventListener('click', () => {
       setStatus('', false);
@@ -818,6 +1047,57 @@
     pre.scrollTop = pre.scrollHeight;
   }
 
+  function setActionIndicator(buttonId, markerId, state) {
+    const btn = document.getElementById(buttonId);
+    const marker = document.getElementById(markerId);
+    if (!btn || !marker) return;
+
+    marker.classList.remove('ok', 'err');
+    btn.style.boxShadow = '';
+    btn.style.border = '';
+
+    if (state === 'ok') {
+      marker.textContent = '✓';
+      marker.title = 'Sucesso';
+      marker.classList.add('ok');
+      btn.style.border = '1px solid #16a34a';
+      btn.style.boxShadow = '0 0 0 2px rgba(22,163,74,.25)';
+      return;
+    }
+    if (state === 'err') {
+      marker.textContent = '✕';
+      marker.title = 'Erro';
+      marker.classList.add('err');
+      btn.style.border = '1px solid #dc2626';
+      btn.style.boxShadow = '0 0 0 2px rgba(220,38,38,.25)';
+      return;
+    }
+    if (state === 'running') {
+      marker.textContent = '…';
+      marker.title = 'Executando';
+      return;
+    }
+
+    marker.textContent = '•';
+    marker.title = 'Sem execução';
+  }
+
+  function setProvisionMkIndicator(state) {
+    setActionIndicator('tmProvisionMk', 'tmProvisionMkResult', state);
+  }
+
+  function setStep1Indicator(state) {
+    setActionIndicator('tmRunStep1', 'tmRunStep1Result', state);
+  }
+
+  function setDisableProvisionMkIndicator(state) {
+    setActionIndicator('tmDisableProvisionMk', 'tmDisableProvisionMkResult', state);
+  }
+
+  function setStep2Indicator(state) {
+    setActionIndicator('tmRunStep2', 'tmRunStep2Result', state);
+  }
+
   function getModalValues() {
     const currentIp = document.getElementById('tmCurrentIp')?.value?.trim();
     const newIp = document.getElementById('tmNewIp')?.value?.trim();
@@ -825,16 +1105,23 @@
     const email = document.getElementById('tmEmail')?.value?.trim();
     const pass = document.getElementById('tmPass')?.value ?? '';
 
+    const usermk = document.getElementById('tmUserMk')?.value?.trim() || '';
+    const passmk = document.getElementById('tmPassMk')?.value ?? '';
+    const portmk = document.getElementById('tmPortMk')?.value?.trim() || '';
+    const apikey = document.getElementById('tmApiKey')?.value?.trim() || '';
+
     if (!currentIp) return { ok: false, msg: 'IP atual vazio.' };
     if (!newIp) return { ok: false, msg: 'Novo IP vazio.' };
     if (!gw) return { ok: false, msg: 'Gateway inválido.' };
     if (!email) return { ok: false, msg: 'Email-monitoring vazio.' };
     if (!pass) return { ok: false, msg: 'Senha-monitoring vazia.' };
-    return { ok: true, currentIp, newIp, gw, email, pass };
+
+    const mkHost = gw;
+    return { ok: true, currentIp, newIp, gw, mkHost, email, pass, usermk, passmk, portmk, apikey };
   }
 
   function disableModalButtons(disabled) {
-    const ids = ['tmRunStep1', 'tmRunStep2', 'tmRunReset', 'tmClearLog', 'tmGetLog'];
+    const ids = ['tmRunStep1', 'tmRunStep2', 'tmRunReset', 'tmClearLog', 'tmGetLog', 'tmProvisionMk', 'tmDisableProvisionMk'];
     ids.forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.disabled = disabled;
@@ -912,6 +1199,7 @@
 
     disableModalButtons(true);
     setPill('Etapa 1', true);
+    setStep1Indicator('running');
 
     try {
       setStatus(`\n=== ETAPA 1 INÍCIO ===\n`, true);
@@ -934,6 +1222,7 @@
       }
 
       setStatus(`\n=== ETAPA 1 FINALIZADA ===\n`, true);
+      setStep1Indicator('ok');
       alert(
         `Etapa 1 enviada.\n\n` +
         `Agora confirme manualmente:\n` +
@@ -944,6 +1233,7 @@
     } catch (e) {
       console.error(e);
       setStatus(`\nERRO: ${e.message}\n`, true);
+      setStep1Indicator('err');
       alert(`Erro na Etapa 1: ${e.message}`);
     } finally {
       setPill('Manual', true);
@@ -968,6 +1258,7 @@
 
     disableModalButtons(true);
     setPill('Etapa 2', true);
+    setStep2Indicator('running');
 
     try {
       setStatus(`\n=== ETAPA 2 INÍCIO ===\n`, true);
@@ -980,10 +1271,12 @@
       );
 
       setStatus(`\n=== ETAPA 2 FINALIZADA (200 OK) ===\n`, true);
+      setStep2Indicator('ok');
       alert('Etapa 2 finalizada ✅ (renew_certificates retornou 200 OK).');
     } catch (e) {
       console.error(e);
       setStatus(`\nERRO: ${e.message}\n`, true);
+      setStep2Indicator('err');
       alert(`Erro na Etapa 2: ${e.message}`);
     } finally {
       setPill('Manual', true);
@@ -1028,6 +1321,200 @@
     }
   }
 
+  async function runProvisionMk() {
+    const v = getModalValues();
+    if (!v.ok) return alert(v.msg);
+    if (!v.newIp) return alert('Novo IP vazio.');
+    if (!v.usermk) return alert('User MK vazio.');
+    if (!v.passmk) return alert('Pass MK vazia.');
+
+    const mkPort = Number.parseInt(v.portmk, 10) || 22;
+    const baseUrl = PROVISION.GO_SSH_BASE_URL;
+    const cmd = [
+      '/ip address remove [find where address="10.15.15.1/24"]',
+      '/ip address add address=10.15.15.1/24 interface=LAN comment=KIPER-PROVISORIO',
+      '/ip firewall nat remove [find where comment="KIPER-ACCESS-PROVISORIO"]',
+      `/ip firewall nat add chain=dstnat dst-address=${v.newIp} action=dst-nat to-addresses=10.15.15.70 comment=KIPER-ACCESS-PROVISORIO`,
+    ].join('; ');
+
+    disableModalButtons(true);
+    setPill('Provision MK', true);
+    setProvisionMkIndicator('running');
+
+    try {
+      setStatus(`\n=== PROVISIONAMENTO MK INÍCIO ===\n`, true);
+      setStatus(`Host: ${v.mkHost}:${mkPort}\nNovo IP: ${v.newIp}\n`, true);
+      setStatus(`Aplicando regras provisórias (IP + NAT)...\n`, true);
+
+      const execResp = await gmRequest({
+        method: 'POST',
+        url: `${baseUrl}/exec`,
+        timeoutMs: 15000,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(v.apikey ? { 'X-API-Key': v.apikey } : {}),
+        },
+        data: JSON.stringify({
+          host: v.mkHost,
+          port: mkPort,
+          user: v.usermk,
+          pass: v.passmk,
+          command: cmd,
+          timeout_seconds: 12,
+        }),
+      });
+
+      if (execResp.status < 200 || execResp.status > 299) {
+        throw new Error(`Exec HTTP ${execResp.status}`);
+      }
+
+      const execJson = tryParseJson(execResp.responseText);
+      const jobId = execJson?.job_id;
+      if (!jobId) throw new Error('Resposta sem job_id no /exec');
+      setStatus(`job_id=${jobId}\n`, true);
+
+      let finalJob = null;
+      for (let i = 0; i < 20; i++) {
+        await sleep(500);
+        const stResp = await gmRequest({
+          method: 'GET',
+          url: `${baseUrl}/status/${encodeURIComponent(jobId)}`,
+          timeoutMs: 10000,
+          headers: v.apikey ? { 'X-API-Key': v.apikey } : {},
+        });
+        if (stResp.status !== 200) continue;
+        const stJson = tryParseJson(stResp.responseText);
+        if (!stJson) continue;
+
+        const st = (stJson.status || '').toLowerCase();
+        if (st === 'done' || st === 'canceled') {
+          finalJob = stJson;
+          break;
+        }
+      }
+
+      if (!finalJob) throw new Error('Timeout aguardando status do job');
+      const hostRes = finalJob.hosts && Object.values(finalJob.hosts)[0] ? Object.values(finalJob.hosts)[0] : null;
+      const ok = !!hostRes?.success;
+      const out = (hostRes?.output || '').trim();
+      const err = (hostRes?.error || '').trim();
+      const benignAlreadyExists = err.toLowerCase().includes('failure: already have such address');
+
+      setStatus(`status_final=${finalJob.status}\n`, true);
+      if (out) setStatus(`output=${out}\n`, true);
+      if (err && !benignAlreadyExists) setStatus(`error=${err}\n`, true);
+
+      if (!ok && benignAlreadyExists) {
+        setStatus(`output=${err}\n`, true);
+        setStatus(`=== PROVISIONAMENTO MK OK (com aviso) ===\n`, true);
+        setProvisionMkIndicator('ok');
+        alert('Provisionamento MK aplicado (com aviso de endereço já existente).');
+        return;
+      }
+
+      if (!ok) throw new Error(err || 'Falha ao ativar provisionamento no MikroTik');
+      setStatus(`=== PROVISIONAMENTO MK OK ===\n`, true);
+      setProvisionMkIndicator('ok');
+      alert('Provisionamento MK ativado com sucesso.');
+    } catch (e) {
+      setStatus(`ERRO PROVISIONAMENTO MK: ${e.message}\n`, true);
+      setProvisionMkIndicator('err');
+      alert(`Erro no Provisionamento MK: ${e.message}`);
+    } finally {
+      setPill('Manual', true);
+      disableModalButtons(false);
+    }
+  }
+
+  async function runDisableProvisionMk() {
+    const v = getModalValues();
+    if (!v.ok) return alert(v.msg);
+    if (!v.usermk) return alert('User MK vazio.');
+    if (!v.passmk) return alert('Pass MK vazia.');
+
+    const mkPort = Number.parseInt(v.portmk, 10) || 22;
+    const baseUrl = PROVISION.GO_SSH_BASE_URL;
+    const cmd = '/ip firewall nat remove [find where comment="KIPER-ACCESS-PROVISORIO"]';
+
+    disableModalButtons(true);
+    setPill('Disable MK', true);
+    setDisableProvisionMkIndicator('running');
+
+    try {
+      setStatus(`\n=== DESABILITAR PROVISIONAMENTO MK INÍCIO ===\n`, true);
+      setStatus(`Host: ${v.mkHost}:${mkPort}\n`, true);
+      setStatus(`Removendo NAT KIPER-ACCESS-PROVISORIO...\n`, true);
+
+      const execResp = await gmRequest({
+        method: 'POST',
+        url: `${baseUrl}/exec`,
+        timeoutMs: 15000,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(v.apikey ? { 'X-API-Key': v.apikey } : {}),
+        },
+        data: JSON.stringify({
+          host: v.mkHost,
+          port: mkPort,
+          user: v.usermk,
+          pass: v.passmk,
+          command: cmd,
+          timeout_seconds: 12,
+        }),
+      });
+
+      if (execResp.status < 200 || execResp.status > 299) {
+        throw new Error(`Exec HTTP ${execResp.status}`);
+      }
+
+      const execJson = tryParseJson(execResp.responseText);
+      const jobId = execJson?.job_id;
+      if (!jobId) throw new Error('Resposta sem job_id no /exec');
+      setStatus(`job_id=${jobId}\n`, true);
+
+      let finalJob = null;
+      for (let i = 0; i < 20; i++) {
+        await sleep(500);
+        const stResp = await gmRequest({
+          method: 'GET',
+          url: `${baseUrl}/status/${encodeURIComponent(jobId)}`,
+          timeoutMs: 10000,
+          headers: v.apikey ? { 'X-API-Key': v.apikey } : {},
+        });
+        if (stResp.status !== 200) continue;
+        const stJson = tryParseJson(stResp.responseText);
+        if (!stJson) continue;
+        const st = (stJson.status || '').toLowerCase();
+        if (st === 'done' || st === 'canceled') {
+          finalJob = stJson;
+          break;
+        }
+      }
+
+      if (!finalJob) throw new Error('Timeout aguardando status do job');
+      const hostRes = finalJob.hosts && Object.values(finalJob.hosts)[0] ? Object.values(finalJob.hosts)[0] : null;
+      const ok = !!hostRes?.success;
+      const out = (hostRes?.output || '').trim();
+      const err = (hostRes?.error || '').trim();
+
+      setStatus(`status_final=${finalJob.status}\n`, true);
+      if (out) setStatus(`output=${out}\n`, true);
+      if (err) setStatus(`error=${err}\n`, true);
+
+      if (!ok) throw new Error(err || 'Falha ao desabilitar provisionamento no MikroTik');
+      setStatus(`=== DESABILITAR PROVISIONAMENTO MK OK ===\n`, true);
+      setDisableProvisionMkIndicator('ok');
+      alert('Provisionamento MK desabilitado com sucesso.');
+    } catch (e) {
+      setStatus(`ERRO DESABILITAR PROVISIONAMENTO MK: ${e.message}\n`, true);
+      setDisableProvisionMkIndicator('err');
+      alert(`Erro ao desabilitar Provisionamento MK: ${e.message}`);
+    } finally {
+      setPill('Manual', true);
+      disableModalButtons(false);
+    }
+  }
+
   function createOpenModalButton(li) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1047,6 +1534,7 @@
       const gwEl = document.getElementById('tmGateway');
 
       curEl.value = currentIp;
+      applyProvisionDraftToInputs(loadProvisionDraft());
       if (!newIpEl.value) newIpEl.value = currentIp;
       gwEl.value = computeGateway(newIpEl.value.trim());
 
@@ -1054,11 +1542,19 @@
       const step2Btn = document.getElementById('tmRunStep2');
       const resetBtn = document.getElementById('tmRunReset');
       const logBtn = document.getElementById('tmGetLog');
+      const provisionMkBtn = document.getElementById('tmProvisionMk');
+      const disableProvisionMkBtn = document.getElementById('tmDisableProvisionMk');
 
       if (!step1Btn.dataset.bound) { step1Btn.dataset.bound = '1'; step1Btn.addEventListener('click', runStep1); }
       if (!step2Btn.dataset.bound) { step2Btn.dataset.bound = '1'; step2Btn.addEventListener('click', runStep2); }
       if (resetBtn && !resetBtn.dataset.bound) { resetBtn.dataset.bound = '1'; resetBtn.addEventListener('click', runReset); }
       if (!logBtn.dataset.bound) { logBtn.dataset.bound = '1'; logBtn.addEventListener('click', runGetLog); }
+      if (provisionMkBtn && !provisionMkBtn.dataset.bound) { provisionMkBtn.dataset.bound = '1'; provisionMkBtn.addEventListener('click', runProvisionMk); }
+      if (disableProvisionMkBtn && !disableProvisionMkBtn.dataset.bound) { disableProvisionMkBtn.dataset.bound = '1'; disableProvisionMkBtn.addEventListener('click', runDisableProvisionMk); }
+      setProvisionMkIndicator('idle');
+      setStep1Indicator('idle');
+      setDisableProvisionMkIndicator('idle');
+      setStep2Indicator('idle');
 
       showModal();
     });
@@ -1108,7 +1604,6 @@
 
     window.addEventListener('popstate', () => setTimeout(fire, 0));
 
-    // Backup (caso a SPA faça magia diferente)
     setInterval(fire, 800);
   }
 
@@ -1128,13 +1623,10 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Start
   refreshAll();
   observeDOM();
 
-  // Re-aplica em navegação interna (sem F5)
   onUrlChange(() => {
-    // dá tempo do conteúdo renderizar
     setTimeout(refreshAll, 250);
     setTimeout(refreshAll, 1200);
   });

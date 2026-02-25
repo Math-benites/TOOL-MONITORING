@@ -1,0 +1,15 @@
+services:
+  go-request:
+    build:
+      context: ./go-request
+      dockerfile: Dockerfile
+    container_name: go-request
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - FIRMWARE_DIR=/data/firmwares
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./firmwares:/data/firmwares
+
