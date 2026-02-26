@@ -297,12 +297,12 @@ function updateDeviceJobBadges(jobs) {
   updateHistoryCard(jobs);
 }
 
-  function findCondominiumDataBody() {
+  function findHistorySectionBody() {
     const cards = document.querySelectorAll('div.Card-sc-1c1pdq5-0');
     for (const card of cards) {
       const header = card.querySelector('.Card__CardHeader-sc-1c1pdq5-1');
       const title = header?.querySelector('h3');
-      if (title && title.textContent.includes('Dados gerais do condomínio')) {
+      if (title && title.textContent.includes('Histórico do condomínio')) {
         return card.querySelector('.Card__CardBody-sc-1c1pdq5-2');
       }
     }
@@ -310,7 +310,7 @@ function updateDeviceJobBadges(jobs) {
   }
 
   function ensureHistoryCardArea() {
-    const body = findCondominiumDataBody();
+    const body = findHistorySectionBody();
     if (!body) return null;
     let card = body.querySelector(`#${HISTORY_CARD_ID}`);
     if (card) return card;
