@@ -20,6 +20,13 @@
   let injectScheduled = false;
   let isInjecting = false;
 
+  const JOBS_STORAGE_KEY = 'tmFirmwareActiveJobs.v1';
+  const JOB_BADGE_ATTR = 'data-tm-job-badge';
+  const HISTORY_CARD_ID = 'tmFirmwareHistoryCard';
+  const JOB_REFRESH_INTERVAL_MS = 6000;
+  let jobStatusInterval = null;
+  let jobStatusRefreshRunning = false;
+
   function norm(text) {
     return (text || '')
       .normalize('NFD')
@@ -119,6 +126,247 @@
     }
   }
 
+  function loadActiveJobs() {
+    try {
+      const raw = localStorage.getItem(JOBS_STORAGE_KEY);
+      if (!raw) return [];
+      return JSON.parse(raw);
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  function saveActiveJobs(jobs) {
+    try {
+      localStorage.setItem(JOBS_STORAGE_KEY, JSON.stringify(jobs));
+    } catch (_e) {
+      // noop
+    }
+  }
+
+  function isJobFinished(status) {
+    if (!status) return false;
+    const normalized = status.toString().toLowerCase();
+    return normalized === 'done' || normalized === 'failed';
+  }
+
+  function upsertActiveJob(entry) {
+    const jobs = loadActiveJobs();
+    const idx = jobs.findIndex((j) => j.jobId === entry.jobId || j.ip === entry.ip);
+    const normalizedEntry = {
+      jobId: entry.jobId,
+      ip: entry.ip,
+      firmware: entry.firmware,
+      status: entry.status,
+      message: entry.message,
+      percent: Number.isFinite(entry.percent) ? entry.percent : 0,
+      createdAt: entry.createdAt || new Date().toISOString(),
+    };
+    if (idx >= 0) {
+      jobs[idx] = { ...jobs[idx], ...normalizedEntry };
+    } else {
+      jobs.push(normalizedEntry);
+    }
+    const filtered = jobs.filter((job) => !isJobFinished(job.status));
+    saveActiveJobs(filtered);
+    updateDeviceJobBadges(filtered);
+  }
+
+  function updateActiveJobStatus(jobId, updates) {
+    const jobs = loadActiveJobs();
+    const idx = jobs.findIndex((j) => j.jobId === jobId);
+    if (idx < 0) {
+      return;
+    }
+    const next = { ...jobs[idx], ...updates };
+    if (isJobFinished(next.status)) {
+      jobs.splice(idx, 1);
+    } else {
+      jobs[idx] = next;
+    }
+    saveActiveJobs(jobs);
+    updateDeviceJobBadges(jobs);
+  }
+
+  function removeActiveJob(jobId) {
+    const jobs = loadActiveJobs().filter((job) => job.jobId !== jobId);
+    saveActiveJobs(jobs);
+    updateDeviceJobBadges(jobs);
+  }
+
+  async function refreshActiveJobs() {
+    if (jobStatusRefreshRunning) return;
+    jobStatusRefreshRunning = true;
+    try {
+      const jobs = loadActiveJobs();
+    if (!jobs.length) {
+      updateDeviceJobBadges([]);
+      return;
+    }
+      const nextJobs = [];
+      for (const job of jobs) {
+        try {
+          const data = await backendFetchJson(`/api/jobs/${encodeURIComponent(job.jobId)}`, { timeoutMs: 8000 });
+          const updatedJob = { ...job };
+          if (data) {
+            if (data.status) {
+              updatedJob.status = data.status;
+            }
+            if (typeof data.message === 'string' && data.message) {
+              updatedJob.message = data.message;
+            }
+            if (Number.isFinite(data.percent)) {
+              updatedJob.percent = data.percent;
+            }
+          }
+          if (!isJobFinished(updatedJob.status)) {
+            nextJobs.push(updatedJob);
+          }
+        } catch (err) {
+          const msg = err?.message || '';
+          const isNotFound = msg.includes('HTTP') && msg.includes('404');
+          if (!isNotFound) {
+            nextJobs.push(job);
+          }
+        }
+      }
+      saveActiveJobs(nextJobs);
+      updateDeviceJobBadges(nextJobs);
+    } finally {
+      jobStatusRefreshRunning = false;
+    }
+  }
+
+  function startActiveJobsMonitor() {
+    if (jobStatusInterval) return;
+    refreshActiveJobs();
+    jobStatusInterval = window.setInterval(refreshActiveJobs, JOB_REFRESH_INTERVAL_MS);
+    window.addEventListener('beforeunload', () => {
+      if (jobStatusInterval) {
+        window.clearInterval(jobStatusInterval);
+        jobStatusInterval = null;
+      }
+    });
+    updateDeviceJobBadges(loadActiveJobs());
+  }
+
+  function createJobBadge(container) {
+    const badge = document.createElement('div');
+    badge.setAttribute(JOB_BADGE_ATTR, '1');
+    badge.style.cssText =
+      'margin-top:4px;padding:2px 6px;border-radius:8px;background:#eef2ff;color:#1d4ed8;font-weight:600;font-size:11px;max-width:95%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    container.appendChild(badge);
+    return badge;
+  }
+
+  function formatJobMessage(job) {
+    const percent = Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
+    const baseMsg = job.message || (job.status ? `Status: ${job.status}` : 'Atualizando firmware');
+    if (percent !== null && !baseMsg.includes(`${percent}%`)) {
+      return `${baseMsg} ${percent}%`;
+    }
+    return baseMsg;
+  }
+
+function updateDeviceJobBadges(jobs) {
+  const jobMap = new Map();
+  (jobs || []).forEach((job) => {
+    const key = (job.ip || '').trim();
+    if (key) {
+      jobMap.set(key, job);
+    }
+  });
+
+    document.querySelectorAll('span[data-ip-buttons-attached]').forEach((span) => {
+      const ip = (span.textContent || '').trim();
+      const column = span.closest('div[class*="Col-sc-"]');
+      if (!column) return;
+      let badge = column.querySelector(`[${JOB_BADGE_ATTR}]`);
+      const job = jobMap.get(ip);
+      if (job && job.jobId) {
+        if (!badge) {
+          badge = createJobBadge(column);
+        }
+        const truncated = formatJobMessage(job).slice(0, 80);
+        badge.textContent = `${truncated} · ${job.jobId}`;
+        badge.style.display = 'block';
+      } else if (badge) {
+        badge.style.display = 'none';
+    }
+  });
+  updateHistoryCard(jobs);
+}
+
+  function findCondominiumDataBody() {
+    const cards = document.querySelectorAll('div.Card-sc-1c1pdq5-0');
+    for (const card of cards) {
+      const header = card.querySelector('.Card__CardHeader-sc-1c1pdq5-1');
+      const title = header?.querySelector('h3');
+      if (title && title.textContent.includes('Dados gerais do condomínio')) {
+        return card.querySelector('.Card__CardBody-sc-1c1pdq5-2');
+      }
+    }
+    return null;
+  }
+
+  function ensureHistoryCardArea() {
+    const body = findCondominiumDataBody();
+    if (!body) return null;
+    let card = body.querySelector(`#${HISTORY_CARD_ID}`);
+    if (card) return card;
+    card = document.createElement('div');
+    card.id = HISTORY_CARD_ID;
+    card.style.cssText =
+      'margin-bottom:16px;padding:12px;border-radius:16px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.12);box-shadow:0 14px 30px rgba(15,23,42,0.4);';
+    const header = document.createElement('div');
+    header.textContent = 'Atualizações de firmware em andamento';
+    header.style.cssText = 'font-weight:600;font-size:15px;margin-bottom:10px;';
+    const list = document.createElement('div');
+    list.dataset.tmFirmwareHistoryList = '1';
+    card.appendChild(header);
+    card.appendChild(list);
+    const existingTable = body.querySelector('div.styles__TableContainer-sc-1dw1r28-0');
+    if (existingTable) {
+      existingTable.parentElement.insertBefore(card, existingTable);
+    } else {
+      body.prepend(card);
+    }
+    return card;
+  }
+
+  function updateHistoryCard(jobs) {
+    const entries = Array.isArray(jobs) ? jobs : [];
+    const card = ensureHistoryCardArea();
+    if (!card) return;
+    const list = card.querySelector('[data-tm-firmware-history-list]');
+    list.innerHTML = '';
+    if (!entries.length) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    entries.forEach((job, index) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.2);';
+      if (index === entries.length - 1) {
+        row.style.borderBottom = 'none';
+      }
+      const title = document.createElement('div');
+      title.textContent = `${job.ip || 'IP desconhecido'} · ${job.firmware || 'firmware'}`;
+      title.style.cssText = 'font-weight:600;font-size:14px;';
+      const detail = document.createElement('div');
+      detail.textContent = formatJobMessage(job);
+      detail.style.cssText = 'font-size:12px;margin-top:4px;color:rgba(255,255,255,0.85);';
+      const meta = document.createElement('div');
+      meta.textContent = `Job ${job.jobId || '---'}`;
+      meta.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.6);margin-top:2px;';
+      row.appendChild(title);
+      row.appendChild(detail);
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+  }
+
   async function fetchBackendFirmwares() {
     const payload = await backendFetchJson('/api/firmwares');
     return Array.isArray(payload?.items) ? payload.items : [];
@@ -130,6 +378,14 @@
       body: JSON.stringify({ ip, username, password, firmware }),
     });
     if (!payload?.job_id) throw new Error('Resposta sem job_id do backend.');
+    upsertActiveJob({
+      jobId: payload.job_id,
+      ip,
+      firmware,
+      status: payload.status || 'queued',
+      message: payload.message || 'Job criado',
+      percent: 0,
+    });
     return payload.job_id;
   }
 
@@ -140,6 +396,13 @@
     while (Date.now() - startedAt < maxMs) {
       if (cancelRef?.cancelled) return;
       const job = await backendFetchJson(`/api/jobs/${encodeURIComponent(jobId)}`, { timeoutMs: 12000 });
+      if (job) {
+        updateActiveJobStatus(jobId, {
+          status: job.status,
+          message: job.message,
+          percent: Number.isFinite(job.percent) ? job.percent : undefined,
+        });
+      }
       const pct = Number.isFinite(job?.percent) ? Math.max(0, Math.min(100, job.percent)) : 0;
       setProgress(pct);
       setStatus(job?.message || `Status: ${job?.status || 'desconhecido'}`);
@@ -148,9 +411,11 @@
         setProgress(100);
         setStatus(job?.message || 'Concluido Update Firmware');
         onDone();
+        removeActiveJob(jobId);
         return;
       }
       if (job?.status === 'failed') {
+        removeActiveJob(jobId);
         throw new Error(job?.message || 'Falha no job de atualização.');
       }
       await wait(2500);
@@ -513,4 +778,5 @@
   }
 
   start();
+  startActiveJobsMonitor();
 })();
