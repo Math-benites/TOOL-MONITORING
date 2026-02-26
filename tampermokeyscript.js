@@ -88,24 +88,33 @@
     const timeoutMs = options.timeoutMs || 15000;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const method = options.method || 'GET';
+    const endpoint = `${GO_REQUEST_BASE}${path}`;
     try {
-      const res = await fetch(`${GO_REQUEST_BASE}${path}`, {
-        method: options.method || 'GET',
+      const res = await fetch(endpoint, {
+        method,
         headers: options.headers || { 'Content-Type': 'application/json' },
         body: options.body,
         signal: ctrl.signal,
       });
+      const rawText = await res.text();
       let data = null;
       try {
-        data = await res.json();
+        data = rawText ? JSON.parse(rawText) : null;
       } catch (_e) {
         data = null;
       }
       if (!res.ok) {
-        const msg = (data && (data.message || data.error)) || `HTTP ${res.status}`;
-        throw new Error(msg);
+        const bodyMsg = (data && (data.message || data.error)) || (rawText || '').trim();
+        const detail = bodyMsg ? ` - ${bodyMsg}` : '';
+        throw new Error(`${method} ${endpoint} -> HTTP ${res.status}${detail}`);
       }
       return data;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        throw new Error(`${method} ${endpoint} -> timeout (${timeoutMs}ms)`);
+      }
+      throw err;
     } finally {
       clearTimeout(t);
     }
@@ -138,7 +147,7 @@
 
       if (job?.status === 'done') {
         setProgress(100);
-        setStatus('Atualização concluída.');
+        setStatus(job?.message || 'Concluido Update Firmware');
         onDone();
         return;
       }
@@ -234,6 +243,10 @@
     status.style.cssText = 'font-size:12px;color:#4b5563;';
     status.textContent = 'Carregando lista de firmware do backend...';
 
+    const resetAlert = document.createElement('div');
+    resetAlert.style.cssText = 'display:none;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;';
+    resetAlert.textContent = 'Sincronizar/parametrizar novamente pois equipamento foi resetado padrao de fabrica.';
+
     const progressWrap = document.createElement('div');
     progressWrap.style.cssText = 'width:100%;height:10px;border-radius:999px;background:#e5e7eb;overflow:hidden;';
 
@@ -248,6 +261,9 @@
     }
     function setStatus(text) {
       status.textContent = text;
+    }
+    function setResetAlert(show) {
+      resetAlert.style.display = show ? 'block' : 'none';
     }
 
     tryFillPasswordFromClipboard(passInput, setStatus);
@@ -342,6 +358,7 @@
         try {
           savePassword(ip, authUser, authPass);
           setBusy(true);
+          setResetAlert(false);
           setProgress(0);
           setStatus('Iniciando envio e monitoramento...');
           cancelRef = { cancelled: false };
@@ -362,9 +379,11 @@
             onDone: () => setBusy(false),
             cancelRef,
           });
+          setResetAlert(true);
         } catch (err) {
           if (cancelRef) cancelRef.cancelled = true;
           setBusy(false);
+          setResetAlert(false);
           setStatus(`Erro: ${err.message}`);
         }
       })();
@@ -384,6 +403,7 @@
     screen.appendChild(fileRow);
     screen.appendChild(progressWrap);
     screen.appendChild(status);
+    screen.appendChild(resetAlert);
     screen.appendChild(footer);
     modalBody.appendChild(screen);
 

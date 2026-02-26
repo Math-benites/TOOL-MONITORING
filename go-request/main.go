@@ -294,25 +294,19 @@ func runJob(jobID string, req StartJobRequest, fullPath string) {
 	close(stopEarlyMonitor)
 	<-doneEarlyMonitor
 
-	setJob(jobID, "monitoring", "arquivo enviado, monitorando...", 0, false)
-
-	if err := monitorUpgrade(jobID, req); err != nil {
-		setJob(jobID, "failed", err.Error(), 0, true)
+	setJob(jobID, "monitoring", "Firmware enviado", 100, false)
+	if err := waitOnlineByUpgradeStatus(jobID, req, 120*time.Second); err != nil {
+		setJob(jobID, "failed", "tempo limite aguardando online após envio do firmware", 100, true)
 		return
 	}
 
-	setJob(jobID, "resetting", "resetando equipamento", 100, false)
+	setJob(jobID, "resetting", "Enviado Reset", 100, false)
 	if err := resetDeviceBasic(req); err != nil {
 		setJob(jobID, "failed", "falha ao resetar equipamento: "+err.Error(), 100, true)
 		return
 	}
 
-	if err := waitDeviceOnline(jobID, req); err != nil {
-		setJob(jobID, "failed", "reset enviado, mas equipamento não voltou online: "+err.Error(), 100, true)
-		return
-	}
-
-	setJob(jobID, "done", "FINALIZADO UPDATE FIRMWARE", 100, true)
+	setJob(jobID, "done", "Concluido Update Firmware", 100, true)
 }
 
 func uploadFirmware(req StartJobRequest, fullPath string) error {
@@ -354,8 +348,9 @@ func monitorUpgrade(jobID string, req StartJobRequest) error {
 	start := time.Now()
 	noStartDeadline := 3 * time.Minute
 	maxTotal := 35 * time.Minute
-	seenUpgrade := false
-	lastPercent := 0
+	lastPercent := getJobPercent(jobID)
+	seenUpgrade := lastPercent > 0
+	reached90 := lastPercent >= 90
 
 	for time.Since(start) < maxTotal {
 		body, statusCode, err := curlDigestRequest(
@@ -363,10 +358,18 @@ func monitorUpgrade(jobID string, req StartJobRequest) error {
 			"", nil, 20*time.Second,
 		)
 		if err != nil {
+			if reached90 {
+				setJob(jobID, "monitoring", "Aguardando inicializar...", 100, false)
+				return nil
+			}
 			time.Sleep(3 * time.Second)
 			continue
 		}
 		if statusCode != http.StatusOK {
+			if reached90 {
+				setJob(jobID, "monitoring", "Aguardando inicializar...", 100, false)
+				return nil
+			}
 			time.Sleep(3 * time.Second)
 			continue
 		}
@@ -381,20 +384,30 @@ func monitorUpgrade(jobID string, req StartJobRequest) error {
 		if st.Percent > lastPercent {
 			lastPercent = st.Percent
 		}
+		if lastPercent >= 90 {
+			reached90 = true
+		}
 
 		if upgrading {
 			seenUpgrade = true
 			setJob(jobID, "monitoring", fmt.Sprintf("atualizando... %d%%", lastPercent), lastPercent, false)
 		} else if !seenUpgrade {
+			if reached90 {
+				setJob(jobID, "monitoring", "Aguardando inicializar...", 100, false)
+				return nil
+			}
 			if time.Since(start) > noStartDeadline {
-				return fmt.Errorf("upload enviado, mas upgrade não iniciou")
+				// Alguns firmwares não refletem upgrading=true em todas as versões.
+				// Após upload aceito + timeout de início, seguimos para etapa de inicialização.
+				setJob(jobID, "monitoring", "Aguardando inicializar...", 100, false)
+				return nil
 			}
 			setJob(jobID, "monitoring", "aguardando início da atualização...", lastPercent, false)
 		} else {
 			if lastPercent < 100 {
 				lastPercent = 100
 			}
-			setJob(jobID, "monitoring", fmt.Sprintf("atualizando... %d%%", lastPercent), lastPercent, false)
+			setJob(jobID, "monitoring", "Aguardando inicializar...", lastPercent, false)
 			return nil
 		}
 
@@ -404,19 +417,71 @@ func monitorUpgrade(jobID string, req StartJobRequest) error {
 	return fmt.Errorf("timeout monitorando atualização")
 }
 
+func getJobPercent(id string) int {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	j, ok := store.jobs[id]
+	if !ok || j == nil {
+		return 0
+	}
+	if j.Percent < 0 {
+		return 0
+	}
+	if j.Percent > 100 {
+		return 100
+	}
+	return j.Percent
+}
+
 func resetDeviceBasic(req StartJobRequest) error {
 	resetURL := fmt.Sprintf("http://%s/ISAPI/System/factoryReset?mode=basic", req.IP)
-	respBody, status, err := curlDigestRequest(
-		req.Username, req.Password, http.MethodPut, resetURL,
-		"", nil, 60*time.Second,
-	)
-	if err != nil {
-		return err
+	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		respBody, status, err := curlDigestRequest(
+			req.Username, req.Password, http.MethodPut, resetURL,
+			"", nil, 20*time.Second,
+		)
+		if err == nil && status == http.StatusOK {
+			return nil
+		}
+
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("HTTP %d - %s", status, trimResp(respBody))
+		}
+		time.Sleep(2 * time.Second)
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("HTTP %d - %s", status, trimResp(respBody))
+
+	if lastErr != nil {
+		return lastErr
 	}
-	return nil
+	return fmt.Errorf("timeout ao executar factoryReset?mode=basic")
+}
+
+func waitOnlineByUpgradeStatus(jobID string, req StartJobRequest, maxWait time.Duration) error {
+	statusURL := fmt.Sprintf("http://%s/ISAPI/System/upgradeStatus", req.IP)
+	deadline := time.Now().Add(maxWait)
+	spin := []string{"\\", "/"}
+	i := 0
+
+	for time.Now().Before(deadline) {
+		setJob(jobID, "monitoring", "Aguardando online "+spin[i%2], 100, false)
+		i++
+
+		_, statusCode, err := curlDigestRequest(
+			req.Username, req.Password, http.MethodGet, statusURL,
+			"", nil, 15*time.Second,
+		)
+		if err == nil && statusCode == http.StatusOK {
+			setJob(jobID, "monitoring", "Online detectado", 100, false)
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("timeout aguardando upgradeStatus online")
 }
 
 func waitDeviceOnline(jobID string, req StartJobRequest) error {
@@ -426,7 +491,7 @@ func waitDeviceOnline(jobID string, req StartJobRequest) error {
 
 	for time.Now().Before(deadline) {
 		attempt++
-		setJob(jobID, "resetting", fmt.Sprintf("aguardando equipamento online... tentativa %d", attempt), 100, false)
+		setJob(jobID, "resetting", fmt.Sprintf("Aguardando inicializar... tentativa %d", attempt), 100, false)
 		_, status, err := curlDigestRequest(
 			req.Username, req.Password, http.MethodGet, deviceInfoURL,
 			"", nil, 20*time.Second,
