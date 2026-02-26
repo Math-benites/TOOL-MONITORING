@@ -15,7 +15,6 @@
   const BTN_ATTR = 'data-tm-firmware-update-btn';
   const SCREEN_ATTR = 'data-tm-firmware-screen';
   const ORIGINAL_ATTR = 'data-tm-firmware-original';
-  const TARGET_MODEL = 'DS-K1T673DX-BR';
   const PASS_STORE_PREFIX = 'tmFirmwarePass.v1';
   const GO_REQUEST_BASE = localStorage.getItem('tmGoRequestBase') || 'http://localhost:18080';
   let injectScheduled = false;
@@ -170,12 +169,6 @@
     const currentScreen = modalBody.querySelector(`div[${SCREEN_ATTR}="1"]`);
     if (currentScreen) return;
 
-    const modelRaw = (
-      modalContent.querySelector('span.lhvXiO')?.textContent ||
-      modalContent.querySelector('h5 .Text-sc-idpc2p-0')?.textContent ||
-      ''
-    ).trim();
-    const model = modelRaw.replace(/\[HIKVISION\]/gi, '').trim();
     const ip = getInfoValueByLabel(modalContent, 'IP');
     const user = getInfoValueByLabel(modalContent, 'Usuário');
     const passFromModal = getInfoValueByLabel(modalContent, 'Senha');
