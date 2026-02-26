@@ -317,7 +317,7 @@ function updateDeviceJobBadges(jobs) {
     card = document.createElement('div');
     card.id = HISTORY_CARD_ID;
     card.style.cssText =
-      'margin-bottom:16px;padding:12px;border-radius:16px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.12);box-shadow:0 14px 30px rgba(15,23,42,0.4);';
+      'margin-bottom:16px;padding:12px;border-radius:16px;background:rgb(41,173,113);color:rgb(255,255,255);border:1px solid rgba(255,255,255,0.12);box-shadow:rgba(15,23,42,0.4) 0px 14px 30px;';
     const header = document.createElement('div');
     header.textContent = 'Atualizações de firmware em andamento';
     header.style.cssText = 'font-weight:600;font-size:15px;margin-bottom:10px;';
