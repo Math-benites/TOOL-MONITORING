@@ -15,7 +15,6 @@
   const BTN_ATTR = 'data-tm-firmware-update-btn';
   const SCREEN_ATTR = 'data-tm-firmware-screen';
   const ORIGINAL_ATTR = 'data-tm-firmware-original';
-  const PASS_STORE_PREFIX = 'tmFirmwarePass.v1';
   const GO_REQUEST_BASE = localStorage.getItem('tmGoRequestBase') || 'http://localhost:18080';
   let injectScheduled = false;
   let isInjecting = false;
@@ -54,40 +53,6 @@
       return (spans[1].textContent || '').trim();
     }
     return '';
-  }
-
-  function getPassStorageKey(ip, user) {
-    return `${PASS_STORE_PREFIX}:${ip || 'noip'}:${user || 'nouser'}`;
-  }
-
-  function loadSavedPassword(ip, user) {
-    try {
-      return localStorage.getItem(getPassStorageKey(ip, user)) || '';
-    } catch (_e) {
-      return '';
-    }
-  }
-
-  function savePassword(ip, user, pass) {
-    try {
-      localStorage.setItem(getPassStorageKey(ip, user), pass || '');
-    } catch (_e) {
-      // noop
-    }
-  }
-
-  async function tryFillPasswordFromClipboard(passInput, setStatus) {
-    if (!passInput || (passInput.value || '').trim()) return;
-    if (!window.isSecureContext || !navigator.clipboard?.readText) return;
-
-    try {
-      const clip = (await navigator.clipboard.readText() || '').trim();
-      if (!clip) return;
-      passInput.value = clip;
-      setStatus('Senha preenchida automaticamente da área de transferência.');
-    } catch (_e) {
-      // Sem permissão no clipboard, mantém fluxo normal sem erro.
-    }
   }
 
   async function backendFetchJson(path, options = {}) {
@@ -373,9 +338,16 @@ function updateDeviceJobBadges(jobs) {
   }
 
   async function startBackendJob({ ip, username, password, firmware }) {
+    const requestBody = { ip, firmware };
+    if (username) {
+      requestBody.username = username;
+    }
+    if (password) {
+      requestBody.password = password;
+    }
     const payload = await backendFetchJson('/api/jobs', {
       method: 'POST',
-      body: JSON.stringify({ ip, username, password, firmware }),
+      body: JSON.stringify(requestBody),
     });
     if (!payload?.job_id) throw new Error('Resposta sem job_id do backend.');
     upsertActiveJob({
@@ -436,9 +408,6 @@ function updateDeviceJobBadges(jobs) {
 
     const ip = getInfoValueByLabel(modalContent, 'IP');
     const user = getInfoValueByLabel(modalContent, 'Usuário');
-    const passFromModal = getInfoValueByLabel(modalContent, 'Senha');
-    const passLooksMasked = /^\*+$/.test((passFromModal || '').trim());
-    const savedPass = loadSavedPassword(ip, user);
 
     const originalNodes = Array.from(modalBody.children);
     originalNodes.forEach((node) => {
@@ -473,19 +442,6 @@ function updateDeviceJobBadges(jobs) {
     const footer = document.createElement('div');
     footer.style.cssText = 'display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-top:4px;';
 
-    const authRow = document.createElement('div');
-    authRow.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
-
-    const userBadge = document.createElement('div');
-    userBadge.style.cssText = 'height:36px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb;font-size:13px;color:#111827;';
-    userBadge.textContent = `Usuário: ${user || 'N/A'}`;
-
-    const passInput = document.createElement('input');
-    passInput.type = 'password';
-    passInput.placeholder = 'Senha do dispositivo (salva por IP)';
-    passInput.value = passLooksMasked ? (savedPass || '') : (passFromModal || savedPass || '');
-    passInput.style.cssText = 'width:240px;height:36px;border:1px solid #d1d5db;border-radius:8px;padding:0 10px;font-size:13px;';
-
     const backBtn = document.createElement('button');
     backBtn.type = 'button';
     backBtn.textContent = 'Voltar';
@@ -500,6 +456,43 @@ function updateDeviceJobBadges(jobs) {
     const status = document.createElement('div');
     status.style.cssText = 'font-size:12px;color:#4b5563;';
     status.textContent = 'Carregando lista de firmware do backend...';
+
+    const restartCommand = 'docker compose restart go-request';
+    const restartHint = document.createElement('div');
+    restartHint.style.cssText =
+      'display:none;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:#fee2e2;color:#7f1d1d;border:1px solid #fecdd3;font-size:12px;flex-wrap:wrap;';
+    const restartText = document.createElement('div');
+    restartText.style.cssText = 'flex:1;min-width:180px;';
+    const restartBtn = document.createElement('button');
+    restartBtn.type = 'button';
+    restartBtn.textContent = 'Copiar comando de reinício';
+    restartBtn.style.cssText =
+      'height:32px;padding:0 12px;border:1px solid #b91c1c;border-radius:8px;background:#b91c1c;color:#fff;cursor:pointer;font-size:12px;';
+    restartBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(restartCommand);
+        setStatus('Comando de reinício copiado para a área de transferencia.');
+      } catch (_err) {
+        setStatus(`Copie manualmente: ${restartCommand}`);
+      }
+    });
+    restartHint.appendChild(restartText);
+    restartHint.appendChild(restartBtn);
+
+    function showRestartHint(message) {
+      const suffix = `Reinicie o container go-request com: ${restartCommand}`;
+      restartText.textContent = message ? `${message} ${suffix}` : `Backend inacessível. ${suffix}`;
+      restartHint.style.display = 'flex';
+    }
+    function hideRestartHint() {
+      restartHint.style.display = 'none';
+    }
+    function shouldSuggestRestartForError(message) {
+      if (!message) return true;
+      const lower = message.toLowerCase();
+      const tokens = ['timeout', 'refused', 'failed to fetch', 'curl falhou', 'connection', 'destino', 'erro no backend'];
+      return tokens.some((token) => lower.includes(token));
+    }
 
     const resetAlert = document.createElement('div');
     resetAlert.style.cssText = 'display:none;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;';
@@ -524,13 +517,10 @@ function updateDeviceJobBadges(jobs) {
       resetAlert.style.display = show ? 'block' : 'none';
     }
 
-    tryFillPasswordFromClipboard(passInput, setStatus);
-
     function setBusy(busy) {
       sendRunning = busy;
       refreshBtn.disabled = busy;
       firmwareSelect.disabled = busy;
-      passInput.disabled = busy;
       backBtn.disabled = busy;
       sendBtn.disabled = busy || !firmwareSelect.value;
       sendBtn.style.opacity = sendBtn.disabled ? '0.6' : '1';
@@ -546,6 +536,7 @@ function updateDeviceJobBadges(jobs) {
       firmwareSelect.appendChild(optLoading);
       sendBtn.disabled = true;
       sendBtn.style.opacity = '0.6';
+      hideRestartHint();
 
       try {
         const items = await fetchBackendFirmwares();
@@ -565,6 +556,7 @@ function updateDeviceJobBadges(jobs) {
         status.textContent = items.length
           ? `Encontrados ${items.length} firmware(s) no backend.`
           : 'Sem firmware na pasta do backend.';
+        hideRestartHint();
       } catch (err) {
         firmwareSelect.innerHTML = '';
         const fail = document.createElement('option');
@@ -572,6 +564,7 @@ function updateDeviceJobBadges(jobs) {
         fail.textContent = 'Erro ao carregar firmware';
         firmwareSelect.appendChild(fail);
         status.textContent = `Erro no backend: ${err.message}`;
+        showRestartHint('Erro ao carregar firmwares.');
       }
     }
 
@@ -599,14 +592,10 @@ function updateDeviceJobBadges(jobs) {
       (async () => {
         const selectedFirmware = firmwareSelect.value || '';
         const authUser = (user || '').trim();
-        const authPass = passInput.value || '';
 
+        hideRestartHint();
         if (!selectedFirmware) {
           status.textContent = 'Selecione um firmware da lista.';
-          return;
-        }
-        if (!authUser || !authPass) {
-          status.textContent = 'Usuário/senha inválidos. Verifique a senha do dispositivo.';
           return;
         }
         if (!ip) {
@@ -614,7 +603,6 @@ function updateDeviceJobBadges(jobs) {
           return;
         }
         try {
-          savePassword(ip, authUser, authPass);
           setBusy(true);
           setResetAlert(false);
           setProgress(0);
@@ -625,11 +613,11 @@ function updateDeviceJobBadges(jobs) {
           const jobId = await startBackendJob({
             ip,
             username: authUser,
-            password: authPass,
             firmware: selectedFirmware,
           });
 
           setStatus(`Job ${jobId} criado. Monitorando...`);
+          hideRestartHint();
           await pollBackendJob({
             jobId,
             setStatus,
@@ -643,6 +631,9 @@ function updateDeviceJobBadges(jobs) {
           setBusy(false);
           setResetAlert(false);
           setStatus(`Erro: ${err.message}`);
+          if (shouldSuggestRestartForError(err?.message)) {
+            showRestartHint(`Erro no backend: ${err?.message || 'indisponível'}.`);
+          }
         }
       })();
     });
@@ -650,17 +641,20 @@ function updateDeviceJobBadges(jobs) {
     fileRow.appendChild(firmwareSelect);
     fileRow.appendChild(refreshBtn);
 
+    const backendNote = document.createElement('div');
+    backendNote.style.cssText = 'font-size:12px;color:#6b7280;';
+    backendNote.textContent = 'Autenticação feita com as credenciais configuradas no backend.';
+
     footer.appendChild(backBtn);
     footer.appendChild(sendBtn);
 
     screen.appendChild(title);
     screen.appendChild(fieldLabel);
-    authRow.appendChild(userBadge);
-    authRow.appendChild(passInput);
-    screen.appendChild(authRow);
     screen.appendChild(fileRow);
+    screen.appendChild(backendNote);
     screen.appendChild(progressWrap);
     screen.appendChild(status);
+    screen.appendChild(restartHint);
     screen.appendChild(resetAlert);
     screen.appendChild(footer);
     modalBody.appendChild(screen);

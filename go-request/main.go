@@ -82,9 +82,11 @@ func (s *jobStore) update(id string, fn func(*Job)) {
 }
 
 var (
-	firmwareDir = getEnv("FIRMWARE_DIR", "/data/firmwares")
-	port        = getEnv("PORT", "8080")
-	store       = &jobStore{jobs: make(map[string]*Job)}
+	firmwareDir    = getEnv("FIRMWARE_DIR", "/data/firmwares")
+	port           = getEnv("PORT", "8080")
+	deviceUser     = getEnv("DEVICE_USER", getEnv("USER", "admin"))
+	devicePassword = getEnv("DEVICE_PASSWORD", getEnv("PASSWORD", ""))
+	store          = &jobStore{jobs: make(map[string]*Job)}
 )
 
 func main() {
@@ -192,10 +194,22 @@ func handleStartJob(w http.ResponseWriter, r *http.Request) {
 	}
 	req.IP = strings.TrimSpace(req.IP)
 	req.Username = strings.TrimSpace(req.Username)
+	req.Password = strings.TrimSpace(req.Password)
 	req.Firmware = strings.TrimSpace(req.Firmware)
 
-	if req.IP == "" || req.Username == "" || req.Password == "" || req.Firmware == "" {
-		http.Error(w, "campos obrigatórios: ip, username, password, firmware", http.StatusBadRequest)
+	if req.Username == "" {
+		req.Username = deviceUser
+	}
+	if req.Password == "" {
+		req.Password = devicePassword
+	}
+
+	if req.IP == "" || req.Firmware == "" {
+		http.Error(w, "campos obrigatórios: ip e firmware", http.StatusBadRequest)
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "credenciais do dispositivo não configuradas", http.StatusInternalServerError)
 		return
 	}
 

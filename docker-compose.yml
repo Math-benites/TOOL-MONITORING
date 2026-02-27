@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: go-request
     restart: unless-stopped
+    env_file:
+      - ./go-request/.env
     environment:
       - PORT=8080
       - FIRMWARE_DIR=/data/firmwares
